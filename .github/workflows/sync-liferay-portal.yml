@@ -11,7 +11,7 @@ jobs:
     steps:
       - run: gh repo sync liferay-ac/liferay-portal --source liferay/liferay-portal --branch master
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.SYNC }}
   workflow-keepalive:
     if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
