@@ -1,0 +1,73 @@
+name: Backport osb-faro to faro-v4.15.x
+
+on:
+  workflow_run:
+    workflows: ["Sync liferay-portal fork"]
+    types: [completed]
+  workflow_dispatch:
+
+jobs:
+  backport:
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_BRANCH: master
+      TARGET_BRANCH: faro-v4.15.x
+      WATCH_PATH: modules/dxp/apps/osb/osb-faro
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC }}
+
+      - name: Configure git
+        run: |
+          git config user.name  "liferay-ac-bot"
+          git config user.email "liferay-ac-bot@users.noreply.github.com"
+
+      - name: Find pending commits
+        id: pending
+        run: |
+          git fetch origin "$SOURCE_BRANCH" "$TARGET_BRANCH"
+          mapfile -t SHAS < <(git log --reverse --no-merges --pretty=%H \
+            "origin/${TARGET_BRANCH}..origin/${SOURCE_BRANCH}" \
+            -- "$WATCH_PATH")
+          if [ ${#SHAS[@]} -eq 0 ]; then
+            echo "has_commits=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_commits=true" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "${SHAS[@]}" > /tmp/shas.txt
+
+      - name: Cherry-pick onto backport branch
+        if: steps.pending.outputs.has_commits == 'true'
+        id: pick
+        run: |
+          BR="backport/osb-faro-$(date +%Y%m%d-%H%M%S)"
+          echo "branch=$BR" >> "$GITHUB_OUTPUT"
+          git checkout -B "$BR" "origin/${TARGET_BRANCH}"
+          CONFLICTS=0
+          while read -r SHA; do
+            if ! git cherry-pick -x "$SHA"; then
+              git add -A
+              GIT_EDITOR=true git cherry-pick --continue || true
+              CONFLICTS=$((CONFLICTS+1))
+            fi
+          done < /tmp/shas.txt
+          echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
+          git push origin "$BR"
+
+      - name: Open PR
+        if: steps.pending.outputs.has_commits == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC }}
+        run: |
+          BODY="Auto-backport of commits from \`${SOURCE_BRANCH}\` affecting \`${WATCH_PATH}\`."
+          if [ "${{ steps.pick.outputs.conflicts }}" != "0" ]; then
+            BODY="$BODY"$'\n\n'"⚠️ ${{ steps.pick.outputs.conflicts }} commit(s) with conflicts — resolve manually before merging."
+          fi
+          gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "${{ steps.pick.outputs.branch }}" \
+            --title "Backport osb-faro → ${TARGET_BRANCH}" \
+            --body "$BODY"
