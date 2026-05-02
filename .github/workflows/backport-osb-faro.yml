@@ -1,14 +1,10 @@
 name: Backport osb-faro to faro-v4.15.x
 
 on:
-  workflow_run:
-    workflows: ["Sync liferay-portal fork"]
-    types: [completed]
   workflow_dispatch:
 
 jobs:
   backport:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     env:
       SOURCE_BRANCH: master
@@ -70,7 +66,8 @@ jobs:
           while read -r SHA; do
             git cherry-pick -x --no-commit "$SHA" || true
 
-            git checkout HEAD -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
+            git reset -q HEAD -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
+            git checkout -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
             git clean -fd -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
 
             if git ls-files -u -- "$WATCH_PATH" | grep -q .; then
