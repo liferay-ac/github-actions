@@ -17,6 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: liferay-ac/liferay-portal
           fetch-depth: 0
           token: ${{ secrets.SYNC }}
 
@@ -25,7 +26,26 @@ jobs:
           git config user.name  "liferay-ac-bot"
           git config user.email "liferay-ac-bot@users.noreply.github.com"
 
+      - name: Skip if previous backport PR is still open
+        id: existing_pr
+        env:
+          GH_TOKEN: ${{ secrets.SYNC }}
+        run: |
+          EXISTING=$(gh pr list \
+            --base "$TARGET_BRANCH" \
+            --state open \
+            --json headRefName,url \
+            --jq '.[] | select(.headRefName | startswith("backport/osb-faro-")) | .url' \
+            | head -n 1)
+          if [ -n "$EXISTING" ]; then
+            echo "Open backport PR still pending: $EXISTING — skipping run."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Find pending commits
+        if: steps.existing_pr.outputs.skip != 'true'
         id: pending
         run: |
           git fetch origin "$SOURCE_BRANCH" "$TARGET_BRANCH"
@@ -48,10 +68,27 @@ jobs:
           git checkout -B "$BR" "origin/${TARGET_BRANCH}"
           CONFLICTS=0
           while read -r SHA; do
-            if ! git cherry-pick -x "$SHA"; then
-              git add -A
-              GIT_EDITOR=true git cherry-pick --continue || true
+            git cherry-pick -x --no-commit "$SHA" || true
+
+            git checkout HEAD -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
+            git clean -fd -- . ":(exclude)$WATCH_PATH" 2>/dev/null || true
+
+            if git ls-files -u -- "$WATCH_PATH" | grep -q .; then
+              git add -A -- "$WATCH_PATH"
               CONFLICTS=$((CONFLICTS+1))
+            fi
+
+            if git diff --cached --quiet; then
+              if [ -f .git/CHERRY_PICK_HEAD ]; then
+                git cherry-pick --skip 2>/dev/null || git reset --hard HEAD
+              fi
+              continue
+            fi
+
+            if [ -f .git/CHERRY_PICK_HEAD ]; then
+              GIT_EDITOR=true git cherry-pick --continue
+            else
+              git commit -C "$SHA"
             fi
           done < /tmp/shas.txt
           echo "conflicts=$CONFLICTS" >> "$GITHUB_OUTPUT"
